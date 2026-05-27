@@ -5,9 +5,25 @@ Records every visit in watchdog_logs so the database also stays active.
 import streamlit as st
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from supabase import create_client, Client
-from streamlit_autorefresh import st_autorefresh
+
+OSLO = ZoneInfo("Europe/Oslo")
+
+def _now_oslo() -> str:
+    return datetime.now(OSLO).strftime("%d %b %H:%M:%S")
+
+def _utc_to_oslo(ts: str) -> str:
+    """Convert UTC ISO timestamp to Oslo local time string."""
+    if not ts:
+        return ""
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        oslo = dt.astimezone(OSLO)
+        return oslo.strftime("%d %b %H:%M:%S")
+    except Exception:
+        return ts[:19]
 
 st.set_page_config(
     page_title="Octa Watchdog",
@@ -205,15 +221,42 @@ interval = settings.get("interval_minutes", 10)
 apps     = get_apps()
 
 # Auto-refresh at the set interval
-# interval is stored in minutes; convert to ms for autorefresh
-st_autorefresh(interval=interval * 60 * 1000, key="watchdog")
+# Auto-visit logic handled by time-based trigger below (no autorefresh needed)
 
-# Run visits in background thread so UI stays responsive
+# ── Time-based auto-visit trigger ────────────────────────────────────────────
+# Runs on every page load (UptimeRobot pings watchdog every 5 min).
+# Starts visits only if interval_hours have passed since last round.
+
 def _run_visits_in_background(apps_to_visit: list):
-    """Background thread: visits each app sequentially, saves results to DB."""
-    visit_all(apps_to_visit)
+    """Background thread: visits each app, updates progress in DB."""
+    n = len(apps_to_visit)
+    for i, app in enumerate(apps_to_visit):
+        # Save progress to settings so UI can show it
+        try:
+            rows = db().table("watchdog_settings").select("id").limit(1).execute().data
+            if rows:
+                db().table("watchdog_settings").update({
+                    "progress_current": i + 1,
+                    "progress_total":   n,
+                    "progress_app":     app.get("name",""),
+                }).eq("id", rows[0]["id"]).execute()
+        except Exception:
+            pass
+        visit_app(app)
+    # Clear progress when done
+    try:
+        rows = db().table("watchdog_settings").select("id").limit(1).execute().data
+        if rows:
+            db().table("watchdog_settings").update({
+                "progress_current": 0,
+                "progress_total":   0,
+                "progress_app":     "",
+                "last_round_at":    datetime.now(timezone.utc).isoformat(),
+            }).eq("id", rows[0]["id"]).execute()
+    except Exception:
+        pass
 
-# Only start a new visit round if one is not already running
+
 if "visit_thread" not in st.session_state:
     st.session_state.visit_thread = None
 
@@ -221,17 +264,37 @@ def _thread_alive() -> bool:
     t = st.session_state.get("visit_thread")
     return t is not None and t.is_alive()
 
-# On autorefresh — launch background visits if not already running
-if apps and not _thread_alive():
-    t = threading.Thread(
-        target=_run_visits_in_background,
-        args=(apps,),
-        daemon=True
-    )
-    t.start()
-    st.session_state.visit_thread = t
+
+# Check if it is time to run a visit round
+def _should_visit() -> bool:
+    if _thread_alive():
+        return False
+    last_round = settings.get("last_round_at","")
+    if not last_round:
+        return True   # never run before
+    try:
+        last_dt  = datetime.fromisoformat(last_round.replace("Z","+00:00"))
+        interval_h = interval // 60
+        return datetime.now(timezone.utc) - last_dt >= timedelta(hours=interval_h)
+    except Exception:
+        return True
+
+if apps and _should_visit():
+    active_apps_list = [a for a in apps if a.get("is_active")]
+    if active_apps_list:
+        t = threading.Thread(
+            target=_run_visits_in_background,
+            args=(active_apps_list,),
+            daemon=True
+        )
+        t.start()
+        st.session_state.visit_thread = t
 
 logs = get_recent_logs(30)
+progress_current = settings.get("progress_current", 0) or 0
+progress_total   = settings.get("progress_total",   0) or 0
+progress_app     = settings.get("progress_app",    "") or ""
+last_round_at    = _utc_to_oslo(settings.get("last_round_at",""))
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -259,27 +322,31 @@ with st.sidebar:
 
     active_count = len([a for a in apps if a.get("is_active")])
     round_mins   = active_count * 1   # ~1 min per app (60s visit)
+    active_count = len([a for a in apps if a.get("is_active")])
+    interval_h2  = interval // 60
+    round_mins2  = active_count   # ~1 min per app
     st.markdown(
         f"<div style='background:#1a2235;border-radius:8px;padding:0.6rem 0.8rem;"
         f"margin-top:0.5rem;font-size:0.82rem;color:#8899b0'>"
-        f"Visit every <strong style='color:#00BCD4'>{interval_hrs}h</strong><br>"
-        f"60s per app | {active_count} apps | ~{round_mins} min/round<br>"
-        f"Log entries: <strong style='color:#00BCD4'>{len(logs)}</strong>"
+        f"Every <strong style='color:#00BCD4'>{interval_h2}h</strong> · "
+        f"60s/app · {active_count} apps<br>"
+        f"~{round_mins2} min/round · {len(logs)} log entries<br>"
+        f"<span style='font-size:0.75rem'>UptimeRobot keeps this app awake</span>"
         f"</div>", unsafe_allow_html=True)
 
     st.markdown("---")
     if st.button("Visit All Now", use_container_width=True, type="primary"):
         if _thread_alive():
-            st.warning("Visit round already running in background...")
+            st.warning("Already running...")
         else:
+            active_now = [a for a in apps if a.get("is_active")]
             t = threading.Thread(
                 target=_run_visits_in_background,
-                args=(apps,), daemon=True
+                args=(active_now,), daemon=True
             )
             t.start()
             st.session_state.visit_thread = t
-            st.success("Visit round started in background!")
-            st.rerun()
+            st.success("Started!"); st.rerun()
 
     st.markdown("---")
     if st.button("Admin Panel", use_container_width=True):
@@ -298,14 +365,27 @@ Every visit is logged to Supabase — keeping both the apps AND the database act
 </p></div>""", unsafe_allow_html=True)
 
 # Show live status of background visits
-if _thread_alive():
+# Progress bar + status
+if _thread_alive() and progress_total > 0:
     suc = "#6fcf97"
+    pct = progress_current / progress_total
     st.markdown(
         f"<div style='background:{suc}22;border:1px solid {suc};border-radius:8px;"
-        f"padding:0.6rem 1rem;margin-bottom:0.8rem;font-size:0.85rem'>"
-        f"<strong style='color:{suc}'>⚙ Visit round running in background</strong> — "
-        f"UI stays fully responsive while apps are being visited. "
-        f"Results appear in the log below as each app completes.</div>",
+        f"padding:0.7rem 1rem;margin-bottom:0.8rem'>"
+        f"<strong style='color:{suc}'>⚙ Visiting apps...</strong> &nbsp;"
+        f"<span style='color:#e2e8f0;font-size:0.85rem'>"
+        f"{progress_current}/{progress_total} — currently: {progress_app}</span>"
+        f"</div>", unsafe_allow_html=True)
+    st.progress(pct, text=f"{progress_app} ({progress_current}/{progress_total})")
+elif _thread_alive():
+    st.info("⚙ Visit round starting...")
+elif last_round_at:
+    interval_h = interval // 60
+    st.markdown(
+        f"<div style='background:#1a2235;border-radius:8px;"
+        f"padding:0.5rem 1rem;margin-bottom:0.8rem;font-size:0.82rem;color:#8899b0'>"
+        f"Last visit round: <strong style='color:#00BCD4'>{last_round_at} (Oslo)</strong>"
+        f" &nbsp;|&nbsp; Next in ~{interval_h}h</div>",
         unsafe_allow_html=True)
 
 # KPI row
@@ -360,13 +440,7 @@ for app in sorted(apps, key=lambda x: x.get("name","")):
     else:
         color="#f6cc52"; badge="Not yet visited"
 
-    checked_str = ""
-    if checked:
-        try:
-            dt = datetime.fromisoformat(checked.replace("Z","+00:00"))
-            checked_str = dt.strftime("%d %b %H:%M")
-        except Exception:
-            checked_str = checked[:16]
+    checked_str = _utc_to_oslo(checked)
 
     st.markdown(
         f"<div style='background:#1a2235;border:1px solid rgba(255,255,255,0.09);"
@@ -409,12 +483,7 @@ else:
         lstat = log.get("status","unknown")
         lc    = "#6fcf97" if lstat=="up" else "#fc8181"
         lms   = log.get("response_ms",0) or 0
-        lt    = log.get("visited_at","")
-        try:
-            dt   = datetime.fromisoformat(lt.replace("Z","+00:00"))
-            lt   = dt.strftime("%d %b %H:%M:%S")
-        except Exception:
-            lt = lt[:19]
+        lt = _utc_to_oslo(log.get("visited_at",""))
         lnotes= (log.get("notes","") or "")[:60]
 
         st.markdown(
@@ -433,5 +502,5 @@ st.markdown(
     f"<div style='text-align:center;color:#8899b0;font-size:0.73rem;margin-top:1rem'>"
     f"Browser visit every {interval//60}h &nbsp;|&nbsp; "
     f"60s per app &nbsp;|&nbsp; "
-    f"Last run: {datetime.now().strftime('%H:%M:%S')}</div>",
+    f"Time (Oslo): {_now_oslo()}</div>",
     unsafe_allow_html=True)
