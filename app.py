@@ -46,9 +46,9 @@ def db() -> Client:
 def get_settings() -> dict:
     try:
         r = db().table("watchdog_settings").select("*").limit(1).execute()
-        return r.data[0] if r.data else {"interval_minutes": 240}
+        return r.data[0] if r.data else {"interval_minutes": 360}
     except Exception:
-        return {"interval_minutes": 240}
+        return {"interval_minutes": 360}
 
 
 def save_interval(minutes: int):
@@ -208,11 +208,28 @@ apps     = get_apps()
 # interval is stored in minutes; convert to ms for autorefresh
 st_autorefresh(interval=interval * 60 * 1000, key="watchdog")
 
-# Visit all apps on every refresh
-if apps:
-    visit_all(apps)
-    time.sleep(3)
-    apps = get_apps()
+# Run visits in background thread so UI stays responsive
+def _run_visits_in_background(apps_to_visit: list):
+    """Background thread: visits each app sequentially, saves results to DB."""
+    visit_all(apps_to_visit)
+
+# Only start a new visit round if one is not already running
+if "visit_thread" not in st.session_state:
+    st.session_state.visit_thread = None
+
+def _thread_alive() -> bool:
+    t = st.session_state.get("visit_thread")
+    return t is not None and t.is_alive()
+
+# On autorefresh — launch background visits if not already running
+if apps and not _thread_alive():
+    t = threading.Thread(
+        target=_run_visits_in_background,
+        args=(apps,),
+        daemon=True
+    )
+    t.start()
+    st.session_state.visit_thread = t
 
 logs = get_recent_logs(30)
 
@@ -252,10 +269,17 @@ with st.sidebar:
 
     st.markdown("---")
     if st.button("Visit All Now", use_container_width=True, type="primary"):
-        with st.spinner("Opening all apps in browser..."):
-            visit_all(apps)
-            time.sleep(len([a for a in apps if a.get("is_active")]) * 65)
-        st.rerun()
+        if _thread_alive():
+            st.warning("Visit round already running in background...")
+        else:
+            t = threading.Thread(
+                target=_run_visits_in_background,
+                args=(apps,), daemon=True
+            )
+            t.start()
+            st.session_state.visit_thread = t
+            st.success("Visit round started in background!")
+            st.rerun()
 
     st.markdown("---")
     if st.button("Admin Panel", use_container_width=True):
@@ -269,9 +293,20 @@ st.markdown("""
 padding:1.2rem 1.8rem;border-radius:12px;border-left:4px solid #00BCD4;margin-bottom:1.5rem">
 <h1 style="margin:0;font-size:1.6rem;color:white">Octa Watchdog</h1>
 <p style="margin:0.2rem 0 0;color:rgba(255,255,255,0.65);font-size:0.88rem">
-Opens each Streamlit app in a headless browser every few minutes.
+Opens each Streamlit app in a headless browser every few hours.
 Every visit is logged to Supabase — keeping both the apps AND the database active.
 </p></div>""", unsafe_allow_html=True)
+
+# Show live status of background visits
+if _thread_alive():
+    suc = "#6fcf97"
+    st.markdown(
+        f"<div style='background:{suc}22;border:1px solid {suc};border-radius:8px;"
+        f"padding:0.6rem 1rem;margin-bottom:0.8rem;font-size:0.85rem'>"
+        f"<strong style='color:{suc}'>⚙ Visit round running in background</strong> — "
+        f"UI stays fully responsive while apps are being visited. "
+        f"Results appear in the log below as each app completes.</div>",
+        unsafe_allow_html=True)
 
 # KPI row
 active_apps   = [a for a in apps if a.get("is_active")]
