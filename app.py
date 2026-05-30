@@ -1,13 +1,15 @@
 """
 Octa Watchdog - Keeps Streamlit apps alive.
-Uses Playwright with ONE shared browser + tabs (not one browser per app).
-Peak RAM: ~200MB total regardless of how many apps.
+Strategy: HTTP GET with real browser headers + repeated pings.
+- No Chrome, no Playwright, no WebSocket
+- Uses <30MB RAM
+- Wakes sleeping apps, prevents active ones from sleeping
+- Combined with UptimeRobot pinging this watchdog every 5min = fully automatic
 """
 import streamlit as st
 import threading
 import time
-import subprocess
-import sys
+import requests
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from supabase import create_client, Client
@@ -56,95 +58,80 @@ def db() -> Client:
         st.secrets["supabase"]["key"]
     )
 
+# Browser-like headers so Streamlit Cloud accepts the request
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;"
+        "q=0.9,image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language":  "en-US,en;q=0.9",
+    "Accept-Encoding":  "gzip, deflate, br",
+    "Connection":       "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Cache-Control":    "no-cache",
+}
 
-def _install_playwright():
-    """Install Playwright Chromium once at startup."""
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True, capture_output=True, timeout=120
-        )
-        return True
-    except Exception as e:
-        return False
 
-
-@st.cache_resource
-def _ensure_playwright_installed() -> bool:
-    return _install_playwright()
-
-
-# ── Visit logic (ONE browser, multiple tabs) ──────────────────────────────────
-
-def visit_all_with_playwright(apps_list: list, settings_id: int,
-                               hold_seconds: int = 45):
+def visit_app(app: dict, hold_seconds: int = 60) -> tuple:
     """
-    Open ONE Chromium browser, visit each app in a new tab,
-    wait hold_seconds, close tab, move to next.
-    Total RAM: ~200MB (one browser) vs 200MB × N (one browser per app).
+    Make multiple HTTP requests to the app over hold_seconds duration.
+    This simulates a user keeping the app open and prevents sleep.
+    Returns (status, response_ms, notes).
     """
-    from playwright.sync_api import sync_playwright
-
-    n = len(apps_list)
+    url   = app["url"].rstrip("/")
+    start = time.time()
 
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--disable-extensions",
-                    "--disable-background-networking",
-                    "--memory-pressure-off",
-                ]
-            )
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (X11; Linux x86_64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                )
-            )
+        session = requests.Session()
+        session.headers.update(HEADERS)
 
-            for i, app in enumerate(apps_list):
-                url  = app["url"]
-                name = app.get("name","")
-                _update_progress(settings_id, i+1, n, name)
+        # Phase 1: Initial GET — wakes the app if sleeping
+        resp = session.get(url, timeout=45, allow_redirects=True)
+        code = resp.status_code
 
-                start  = time.time()
-                status = "down"
-                notes  = ""
-                page   = None
+        if code >= 400:
+            ms = int((time.time()-start)*1000)
+            return "down", ms, f"HTTP {code}"
 
-                try:
-                    page  = context.new_page()
-                    page.goto(url, timeout=30000, wait_until="domcontentloaded")
-                    # Wait for Streamlit to establish WebSocket
-                    time.sleep(hold_seconds)
-                    title  = page.title()
-                    status = "up"
-                    notes  = f"Title: {title[:60]}" if title else "Connected"
-                except Exception as e:
-                    notes = str(e)[:100]
-                finally:
-                    if page:
-                        try: page.close()
-                        except Exception: pass
+        # Phase 2: Hit the health endpoint
+        try:
+            session.get(f"{url}/_stcore/health", timeout=10)
+        except Exception:
+            pass
 
-                ms = int((time.time() - start) * 1000)
-                _log_and_update(app, status, ms, notes)
+        # Phase 3: Keep session alive by polling health every 15s
+        elapsed = time.time() - start
+        while elapsed < hold_seconds:
+            time.sleep(15)
+            try:
+                session.get(f"{url}/_stcore/health", timeout=10)
+            except Exception:
+                pass
+            elapsed = time.time() - start
 
-            context.close()
-            browser.close()
+        ms    = int((time.time()-start)*1000)
+        title = ""
+        try:
+            if "<title>" in resp.text:
+                title = resp.text.split("<title>")[1].split("</title>")[0][:50]
+        except Exception:
+            pass
+        return "up", ms, f"OK · {title}" if title else "OK"
 
+    except requests.exceptions.ConnectionError:
+        ms = int((time.time()-start)*1000)
+        return "down", ms, "Connection refused (app may be sleeping)"
+    except requests.exceptions.Timeout:
+        ms = int((time.time()-start)*1000)
+        return "down", ms, "Timeout (app may be starting up)"
     except Exception as e:
-        # Log failure for all remaining apps
-        for app in apps_list:
-            _log_and_update(app, "down", 0, f"Browser error: {str(e)[:80]}")
-
-    _clear_progress(settings_id)
+        ms = int((time.time()-start)*1000)
+        return "down", ms, str(e)[:100]
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -203,7 +190,7 @@ def _log_and_update(app: dict, status: str, ms: int, notes: str):
     except Exception:
         pass
 
-def _update_progress(sid: int, current: int, total: int, name: str):
+def _update_progress(sid, current, total, name):
     try:
         db().table("watchdog_settings").update({
             "progress_current": current,
@@ -213,15 +200,22 @@ def _update_progress(sid: int, current: int, total: int, name: str):
     except Exception:
         pass
 
-def _clear_progress(sid: int):
+def _clear_progress(sid):
     try:
         db().table("watchdog_settings").update({
-            "progress_current": 0, "progress_total": 0,
-            "progress_app": "",
+            "progress_current": 0, "progress_total": 0, "progress_app": "",
             "last_round_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", sid).execute()
     except Exception:
         pass
+
+def _run_visits(apps_list: list, settings_id: int, hold_seconds: int = 60):
+    n = len(apps_list)
+    for i, app in enumerate(apps_list):
+        _update_progress(settings_id, i+1, n, app.get("name",""))
+        status, ms, notes = visit_app(app, hold_seconds)
+        _log_and_update(app, status, ms, notes)
+    _clear_progress(settings_id)
 
 def _should_visit(settings: dict, interval: int) -> bool:
     last = settings.get("last_round_at","")
@@ -234,8 +228,6 @@ def _should_visit(settings: dict, interval: int) -> bool:
 
 
 # ── Load & trigger ────────────────────────────────────────────────────────────
-
-_ensure_playwright_installed()
 
 settings = get_settings()
 interval = settings.get("interval_minutes", 360)
@@ -252,10 +244,7 @@ def _thread_alive() -> bool:
 active_apps = [a for a in apps if a.get("is_active")]
 
 if active_apps and not _thread_alive() and _should_visit(settings, interval):
-    t = threading.Thread(
-        target=visit_all_with_playwright,
-        args=(active_apps, sid), daemon=True
-    )
+    t = threading.Thread(target=_run_visits, args=(active_apps, sid), daemon=True)
     t.start()
     st.session_state.visit_thread = t
 
@@ -264,7 +253,7 @@ progress_current = settings.get("progress_current", 0) or 0
 progress_total   = settings.get("progress_total",   0) or 0
 progress_app     = settings.get("progress_app",    "") or ""
 last_round_at    = _utc_to_oslo(settings.get("last_round_at",""))
-interval_h       = interval // 60
+interval_h       = max(1, interval // 60)
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -274,25 +263,25 @@ with st.sidebar:
 <div style="text-align:center;padding:1rem 0 0.5rem">
 <div style="font-size:2.5rem">shield</div>
 <div style="font-weight:700;font-size:1rem;color:#e2e8f0">Octa Watchdog</div>
-<div style="color:#8899b0;font-size:0.7rem">One browser, many tabs</div>
+<div style="color:#8899b0;font-size:0.7rem">HTTP keepalive · &lt;30MB RAM</div>
 </div>""", unsafe_allow_html=True)
     st.markdown("---")
 
     st.markdown("<div style='color:#8899b0;font-size:0.75rem;font-weight:600;"
-                "text-transform:uppercase;letter-spacing:0.08em'>Interval (hours)</div>",
+                "text-transform:uppercase'>Interval (hours)</div>",
                 unsafe_allow_html=True)
     new_hrs = st.slider("h", 1, 12, interval_h, label_visibility="collapsed")
     if new_hrs * 60 != interval:
-        save_interval(new_hrs * 60)
-        st.success(f"Set to {new_hrs}h"); st.rerun()
+        save_interval(new_hrs * 60); st.success(f"Set to {new_hrs}h"); st.rerun()
 
+    n_active = len(active_apps)
+    round_min = n_active  # ~1 min per app (60s hold)
     st.markdown(
         f"<div style='background:#1a2235;border-radius:8px;padding:0.6rem 0.8rem;"
         f"margin-top:0.5rem;font-size:0.82rem;color:#8899b0'>"
-        f"Every <strong style='color:#00BCD4'>{interval_h}h</strong> · "
-        f"One browser · {len(active_apps)} tabs<br>"
-        f"45s/app · ~{len(active_apps)} min/round<br>"
-        f"<span style='font-size:0.73rem'>Add to UptimeRobot to run automatically</span>"
+        f"Every <strong style='color:#00BCD4'>{interval_h}h</strong><br>"
+        f"{n_active} apps · 60s/app · ~{round_min} min/round<br>"
+        f"<span style='font-size:0.73rem'>Add to UptimeRobot (5 min) for auto-run</span>"
         f"</div>", unsafe_allow_html=True)
 
     st.markdown("---")
@@ -300,10 +289,7 @@ with st.sidebar:
         if _thread_alive():
             st.warning("Already running...")
         else:
-            t = threading.Thread(
-                target=visit_all_with_playwright,
-                args=(active_apps, sid), daemon=True
-            )
+            t = threading.Thread(target=_run_visits, args=(active_apps, sid), daemon=True)
             t.start()
             st.session_state.visit_thread = t
             st.success("Started!"); st.rerun()
@@ -320,22 +306,23 @@ st.markdown("""
 padding:1.2rem 1.8rem;border-radius:12px;border-left:4px solid #00BCD4;margin-bottom:1rem">
 <h1 style="margin:0;font-size:1.6rem;color:white">Octa Watchdog</h1>
 <p style="margin:0.2rem 0 0;color:rgba(255,255,255,0.65);font-size:0.88rem">
-One shared Chromium browser opens each app as a tab — real browser visit, minimal RAM.
+Visits each app via HTTP every few hours to prevent sleeping. Under 30MB RAM.
+Add this watchdog to UptimeRobot (5 min ping) for fully automatic operation.
 </p></div>""", unsafe_allow_html=True)
 
 # Progress / status banner
 if _thread_alive() and progress_total > 0:
     suc = "#6fcf97"
+    pct = progress_current / progress_total
     st.markdown(
         f"<div style='background:{suc}22;border:1px solid {suc};"
         f"border-radius:8px;padding:0.6rem 1rem;margin-bottom:0.5rem'>"
-        f"<strong style='color:{suc}'>⚙ Visiting...</strong> "
+        f"<strong style='color:{suc}'>⚙ Running...</strong> "
         f"<span style='color:#e2e8f0'>{progress_current}/{progress_total} — {progress_app}</span>"
         f"</div>", unsafe_allow_html=True)
-    st.progress(progress_current / progress_total,
-                text=f"{progress_app} ({progress_current}/{progress_total})")
+    st.progress(pct, text=f"{progress_app} ({progress_current}/{progress_total})")
 elif _thread_alive():
-    st.info("⚙ Starting browser...")
+    st.info("⚙ Starting...")
 elif last_round_at:
     st.markdown(
         f"<div style='background:#1a2235;border-radius:8px;"
@@ -345,8 +332,8 @@ elif last_round_at:
         unsafe_allow_html=True)
 
 # KPI row
-up_count   = sum(1 for a in active_apps if a.get("last_status") == "up")
-down_count = sum(1 for a in active_apps if a.get("last_status") == "down")
+up_count   = sum(1 for a in active_apps if a.get("last_status")=="up")
+down_count = sum(1 for a in active_apps if a.get("last_status")=="down")
 k1,k2,k3,k4 = st.columns(4)
 for col, label, val, color in [
     (k1,"Monitored",  len(active_apps), "#00BCD4"),
@@ -379,17 +366,17 @@ for app in sorted(apps, key=lambda x: x.get("name","")):
     ms      = app.get("last_response_ms",0) or 0
     checks  = app.get("check_count",0) or 0
     fails   = app.get("fail_count",0)  or 0
-    uptime  = round((1 - fails/checks)*100,1) if checks>0 else 0
+    uptime  = round((1-fails/checks)*100,1) if checks>0 else 0
     checked = _utc_to_oslo(app.get("last_checked",""))
 
     if not active:
         color="#555577"; badge="Paused"
     elif status=="up":
-        color="#6fcf97"; badge=f"Visited OK ({ms//1000}s)"
+        color="#6fcf97"; badge=f"OK ({ms//1000}s)"
     elif status=="down":
-        color="#fc8181"; badge="Visit failed"
+        color="#fc8181"; badge="Failed"
     else:
-        color="#f6cc52"; badge="Not yet visited"
+        color="#f6cc52"; badge="Pending"
 
     st.markdown(
         f"<div style='background:#1a2235;border-left:5px solid {color};"
@@ -408,6 +395,7 @@ for app in sorted(apps, key=lambda x: x.get("name","")):
         + "</div></div></div>",
         unsafe_allow_html=True)
 
+# Log
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("<div style='font-size:0.72rem;font-weight:600;text-transform:uppercase;"
             "color:#00BCD4;margin-bottom:0.5rem;padding-bottom:0.3rem;"
@@ -438,9 +426,9 @@ if logs:
             f"{(log.get('notes','') or '')[:60]}</span>"
             f"</div>", unsafe_allow_html=True)
 else:
-    st.info("No visits logged yet.")
+    st.info("No visits logged yet. Click Visit All Now to run the first round.")
 
 st.markdown(
     f"<div style='text-align:center;color:#8899b0;font-size:0.73rem;margin-top:1rem'>"
-    f"Time (Oslo): {_now_oslo()} · Every {interval_h}h · One browser shared</div>",
+    f"Oslo: {_now_oslo()} · Every {interval_h}h · &lt;30MB RAM</div>",
     unsafe_allow_html=True)
