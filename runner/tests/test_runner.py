@@ -74,7 +74,7 @@ def test_a_run_wakes_apps_and_saves_results(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(w, "rpc", fake_rpc)
-    monkeypatch.setattr(w, "where_am_i", lambda: ("NO", "5.6.7.8"))
+    monkeypatch.setattr(w, "where_am_i", lambda: ("NO", "5.6.7.8", None))
     for k, v in dict(OCTA_DB_URL="https://octa", OCTA_DB_KEY="k", DF_DB_URL="https://df", DF_DB_KEY="k2",
                      WATCHDOG_KEY="secret", PROTON_WG_JP="").items():
         monkeypatch.setenv(k, v)
@@ -108,3 +108,19 @@ def test_vpn_commands(monkeypatch):
                         "sudo chmod 600 /etc/wireguard/wg0.conf", "sudo wg-quick up wg0"]
     assert "PrivateKey = k" in ran[1][1] and "DNS" not in ran[1][1]
     assert "sudo resolvectl dns wg0 10.2.0.1" in cmds and cmds[-2:] == ["sudo wg-quick down wg0", "sudo rm -f /etc/wireguard/wg0.conf"]
+
+
+def test_where_am_i_reads_cloudflare(monkeypatch):
+    class R:
+        status_code = 200
+        text = "fl=1\nip=185.107.56.1\nloc=NL\nwarp=off\n"
+    monkeypatch.setattr(w.requests, "get", lambda *a, **k: R())
+    assert w.where_am_i() == ("NL", "185.107.56.1", None)
+
+
+def test_where_am_i_says_why_it_failed(monkeypatch):
+    def boom(*a, **k):
+        raise w.requests.ConnectionError()
+    monkeypatch.setattr(w.requests, "get", boom)
+    cc, ip, why = w.where_am_i()
+    assert cc is None and "cloudflare ConnectionError" in why and "ipinfo.io ConnectionError" in why

@@ -118,14 +118,29 @@ def vpn_down() -> None:
         pass
 
 
-def where_am_i() -> tuple[str | None, str | None]:
-    for url, cc, ip in (("https://ipinfo.io/json", "country", "ip"), ("https://api.country.is/", "country", "ip")):
+def where_am_i() -> tuple[str | None, str | None, str | None]:
+    """(country code, public IP, problem) as the websites see this runner. Cloudflare's trace page first: it answers
+    VPN addresses too; the others as fallbacks."""
+    problems = []
+    try:
+        r = requests.get("https://www.cloudflare.com/cdn-cgi/trace", timeout=15)
+        kv = dict(line.split("=", 1) for line in r.text.splitlines() if "=" in line)
+        if kv.get("loc") and kv.get("ip"):
+            return kv["loc"].upper(), kv["ip"], None
+        problems.append(f"cloudflare {r.status_code}")
+    except Exception as e:  # noqa: BLE001
+        problems.append(f"cloudflare {type(e).__name__}")
+    for url in ("https://api.country.is/", "https://ipinfo.io/json", "https://ipapi.co/json/"):
         try:
-            j = requests.get(url, timeout=15).json()
-            return j.get(cc), j.get(ip)
-        except Exception:  # noqa: BLE001
-            continue
-    return None, None
+            r = requests.get(url, timeout=15, headers={"User-Agent": "curl/8"})
+            j = r.json()
+            cc = j.get("country") or j.get("country_code")
+            if cc and j.get("ip"):
+                return cc.upper(), j["ip"], None
+            problems.append(f"{url.split('/')[2]} {r.status_code}")
+        except Exception as e:  # noqa: BLE001
+            problems.append(f"{url.split('/')[2]} {type(e).__name__}")
+    return None, None, "; ".join(problems)
 
 
 # ---------------------------------------------------------------------------------------------------- visits
@@ -211,7 +226,11 @@ def main(argv: list[str]) -> int:
             except Exception as e:  # noqa: BLE001
                 err = getattr(e, "stderr", b"") or b""
                 notes.append(f"VPN for {country} did not connect ({err.decode(errors='ignore')[-160:].strip() or type(e).__name__}); visited without VPN")
-    vpn_country, ip = where_am_i()
+    vpn_country, ip, why = where_am_i()
+    if why:
+        notes.append(f"could not tell the visiting country ({why})")
+    if connected:
+        notes.append(f"VPN for {country} connected")
     if connected and vpn_country and vpn_country != country:
         notes.append(f"VPN exit is in {vpn_country}, not {country}")
     print(f"Run {plan['run_id']}: planned {country}, visiting from {vpn_country} ({ip}), {len(plan['targets'])} pages")
