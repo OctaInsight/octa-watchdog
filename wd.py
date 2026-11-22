@@ -4,6 +4,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import base64
+from pathlib import Path
+
 import requests
 import streamlit as st
 
@@ -24,20 +27,15 @@ COUNTRIES = {
     "IN": "India", "BR": "Brazil", "ZA": "South Africa", "EG": "Egypt",
 }
 
+VERSION = "1.0.0"
+# The same light look as MOOC Studio and the Octa suite (theme in .streamlit/config.toml): dark text on white
 CSS = """<style>
-html,body,[data-testid="stAppViewContainer"]{background:#0f1421!important;color:#e2e8f0!important}
-[data-testid="stSidebar"]{background:#1B2A4A!important;border-right:3px solid #00BCD4!important}
-[data-testid="stSidebar"] *{color:#e2e8f0!important}
-h1,h2,h3,h4{color:#e2e8f0!important}
-[data-testid="stButton"]>button,[data-testid="stFormSubmitButton"]>button{border-radius:8px!important}
-[data-testid="stButton"]>button[kind="primary"],[data-testid="stFormSubmitButton"]>button[kind="primary"]{
-  background:linear-gradient(135deg,#00BCD4,#0097A7)!important;border:none!important;color:white!important;font-weight:600!important}
-.wd-head{background:linear-gradient(135deg,#1B2A4A,#2d4a7a);padding:1.2rem 1.6rem;border-radius:12px;
-  border-left:4px solid #00BCD4;margin-bottom:1.2rem}
-.wd-head h1{margin:0;font-size:1.6rem;color:white}
-.wd-head p{margin:.3rem 0 0;color:rgba(255,255,255,.7);font-size:.9rem}
-.wd-card{background:#1a2235;border:1px solid rgba(255,255,255,.09);border-radius:10px;padding:.9rem 1.1rem;margin-bottom:.6rem}
-.wd-muted{color:#8899b0;font-size:.85rem}
+.block-container{padding-top:1.6rem}
+.wd-head{margin-bottom:1rem}
+.wd-head h1{margin:0;font-size:1.9rem;color:#0b0b0b}
+.wd-head p{margin:.25rem 0 0;color:#52514e;font-size:.95rem}
+.wd-card{border:1px solid #e4e3df;border-radius:12px;padding:12px 16px;background:#fff;margin-bottom:6px;color:#0b0b0b}
+.wd-muted{color:#52514e;font-size:.86rem}
 </style>"""
 
 
@@ -126,11 +124,31 @@ def page_setup(title: str, subtitle: str) -> dict:
         sidebar(APP)
         st.page_link("app.py", label="Dashboard", icon="🛡️")
         st.page_link("pages/admin.py", label="Apps, websites and setup", icon="⚙️")
+        sidebar_footer()
     if user.get("role") != "admin":
         st.warning("The Watchdog is for Octa admins only.")
         st.stop()
     st.markdown(f"<div class='wd-head'><h1>{title}</h1><p>{subtitle}</p></div>", unsafe_allow_html=True)
     return user
+
+
+@st.cache_data(show_spinner=False)
+def _octa_logo_b64() -> str:
+    logo = Path(__file__).parent / "octa_auth" / "octa_logo.png"
+    return base64.b64encode(logo.read_bytes()).decode() if logo.exists() else ""
+
+
+def sidebar_footer() -> None:
+    """Bottom of the sidebar: name, version, copyright and the Octa Insight logo (full resolution, scaled by the
+    browser so it stays sharp on high-density screens)."""
+    st.divider()
+    st.markdown("<div style='font-size:.82rem;line-height:1.5;color:#52514e'>"
+                f"<b style='color:#0b0b0b'>Octa Watchdog {VERSION}</b><br>"
+                "© 2026 Octa Insight · Produced by Octa Systems</div>", unsafe_allow_html=True)
+    b64 = _octa_logo_b64()
+    if b64:
+        st.markdown(f"<img src='data:image/png;base64,{b64}' alt='Octa Insight' "
+                    "style='width:150px;height:auto;margin-top:8px'>", unsafe_allow_html=True)
 
 
 class WatchdogError(Exception):
