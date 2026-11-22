@@ -135,6 +135,6 @@ Good to know:
   during a run, or that run goes without the VPN.
 - Every run is recorded in both databases (table `watchdog_runs` in Octa_projects and in Data_and_Future) the moment
   it starts, which also keeps the free Supabase projects from pausing.
-- GitHub switches off schedules in repositories without commits for 60 days; the workflow makes an empty commit
-  every ~45 days to prevent that.
+- GitHub switches off schedules in repositories without activity for 60 days; every run re-enables the schedule
+  through GitHub's own API to prevent that.
 """)

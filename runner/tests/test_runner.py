@@ -51,8 +51,9 @@ Endpoint = 1.2.3.4:51820"""
 
 
 def test_vpn_file_comes_from_the_github_secrets(monkeypatch):
-    monkeypatch.setenv("SECRETS_JSON", json.dumps({"PROTON_WG_NL": "[Interface]", "GITHUB_TOKEN": "x"}))
-    assert w.wireguard_config("NL") == "[Interface]" and w.wireguard_config("US") is None
+    monkeypatch.setenv("PROTON_WG_NL", "[Interface]\n")
+    monkeypatch.setenv("PROTON_WG_US", "")              # GitHub passes a missing secret as an empty value
+    assert w.wireguard_config("NL") == "[Interface]" and w.wireguard_config("US") is None and w.wireguard_config("JP") is None
 
 
 def test_a_run_wakes_apps_and_saves_results(monkeypatch):
@@ -75,7 +76,7 @@ def test_a_run_wakes_apps_and_saves_results(monkeypatch):
     monkeypatch.setattr(w, "rpc", fake_rpc)
     monkeypatch.setattr(w, "where_am_i", lambda: ("NO", "5.6.7.8"))
     for k, v in dict(OCTA_DB_URL="https://octa", OCTA_DB_KEY="k", DF_DB_URL="https://df", DF_DB_KEY="k2",
-                     WATCHDOG_KEY="secret", SECRETS_JSON="{}").items():
+                     WATCHDOG_KEY="secret", PROTON_WG_JP="").items():
         monkeypatch.setenv(k, v)
     assert w.main([]) == 0
     fns = [(u, f, a.get("p", {}).get("action")) for u, f, a in calls]

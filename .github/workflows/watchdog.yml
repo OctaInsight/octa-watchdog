@@ -18,7 +18,8 @@ on:
         default: true
 
 permissions:
-  contents: write          # only for the keep-alive commit below
+  contents: read
+  actions: write           # only for the keep-alive call below (re-enables this workflow's schedule)
 
 concurrency:
   group: watchdog
@@ -46,9 +47,11 @@ jobs:
 
       - name: Is a run due?
         id: check
+        env:
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
         run: |
           pip install --quiet requests
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+          if [ "$FORCE" = "true" ]; then
             echo "due=true" >> "$GITHUB_OUTPUT"
           else
             python runner/watchdog_run.py --check
@@ -63,19 +66,44 @@ jobs:
 
       - name: Run
         if: steps.check.outputs.due == 'true'
-        env:
-          SECRETS_JSON: ${{ toJSON(secrets) }}
-        run: python runner/watchdog_run.py ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }}
+        env:                     # one Proton WireGuard file per country; countries without a secret are empty
+          PROTON_WG_NL: ${{ secrets.PROTON_WG_NL }}
+          PROTON_WG_US: ${{ secrets.PROTON_WG_US }}
+          PROTON_WG_JP: ${{ secrets.PROTON_WG_JP }}
+          PROTON_WG_PL: ${{ secrets.PROTON_WG_PL }}
+          PROTON_WG_RO: ${{ secrets.PROTON_WG_RO }}
+          PROTON_WG_NO: ${{ secrets.PROTON_WG_NO }}
+          PROTON_WG_CH: ${{ secrets.PROTON_WG_CH }}
+          PROTON_WG_SG: ${{ secrets.PROTON_WG_SG }}
+          PROTON_WG_MX: ${{ secrets.PROTON_WG_MX }}
+          PROTON_WG_CA: ${{ secrets.PROTON_WG_CA }}
+          PROTON_WG_DE: ${{ secrets.PROTON_WG_DE }}
+          PROTON_WG_FR: ${{ secrets.PROTON_WG_FR }}
+          PROTON_WG_GB: ${{ secrets.PROTON_WG_GB }}
+          PROTON_WG_ES: ${{ secrets.PROTON_WG_ES }}
+          PROTON_WG_IT: ${{ secrets.PROTON_WG_IT }}
+          PROTON_WG_SE: ${{ secrets.PROTON_WG_SE }}
+          PROTON_WG_FI: ${{ secrets.PROTON_WG_FI }}
+          PROTON_WG_DK: ${{ secrets.PROTON_WG_DK }}
+          PROTON_WG_AT: ${{ secrets.PROTON_WG_AT }}
+          PROTON_WG_BE: ${{ secrets.PROTON_WG_BE }}
+          PROTON_WG_PT: ${{ secrets.PROTON_WG_PT }}
+          PROTON_WG_GR: ${{ secrets.PROTON_WG_GR }}
+          PROTON_WG_IE: ${{ secrets.PROTON_WG_IE }}
+          PROTON_WG_AU: ${{ secrets.PROTON_WG_AU }}
+          PROTON_WG_IN: ${{ secrets.PROTON_WG_IN }}
+          PROTON_WG_BR: ${{ secrets.PROTON_WG_BR }}
+          PROTON_WG_ZA: ${{ secrets.PROTON_WG_ZA }}
+          PROTON_WG_EG: ${{ secrets.PROTON_WG_EG }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+        run: |
+          if [ "$FORCE" = "true" ]; then python runner/watchdog_run.py --force; else python runner/watchdog_run.py; fi
 
-      # GitHub switches off scheduled workflows in a repository with no commits for 60 days. An empty commit every
-      # ~45 days keeps the schedule alive.
+      # GitHub switches off schedules in repositories with no activity for 60 days. Enabling the workflow again
+      # through GitHub's own API resets that clock; it changes nothing in the code.
       - name: Keep the schedule alive
         if: always()
-        run: |
-          last=$(git log -1 --format=%ct)
-          if [ $(( $(date +%s) - last )) -gt $(( 45 * 86400 )) ]; then
-            git config user.name "octa-watchdog"
-            git config user.email "octa-watchdog@users.noreply.github.com"
-            git commit --allow-empty -m "Keep the Watchdog schedule active"
-            git push
-          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: gh api -X PUT "repos/$REPO/actions/workflows/watchdog.yml/enable" || true

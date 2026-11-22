@@ -14,11 +14,10 @@ One run:
   python runner/watchdog_run.py [--force]   does a run (--force: even if the last run was recent)
 
 Environment: OCTA_DB_URL, OCTA_DB_KEY, DF_DB_URL, DF_DB_KEY (publishable keys, public), WATCHDOG_KEY (secret, made in
-the Watchdog app), SECRETS_JSON (all GitHub secrets as JSON, to find PROTON_WG_<CODE>), GITHUB_OUTPUT (set by GitHub).
+the Watchdog app), PROTON_WG_<CODE> (one WireGuard file per country, from the GitHub secrets), GITHUB_OUTPUT.
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
@@ -73,12 +72,9 @@ def ping_second_db(country: str) -> str:
 
 # ---------------------------------------------------------------------------------------------------- VPN
 def wireguard_config(country: str) -> str | None:
-    """The Proton WireGuard file for this country from the GitHub secrets (PROTON_WG_NL, …)."""
-    try:
-        secrets = json.loads(os.environ.get("SECRETS_JSON") or "{}")
-    except ValueError:
-        secrets = {}
-    return secrets.get(f"PROTON_WG_{country}") or os.environ.get(f"PROTON_WG_{country}")
+    """The Proton WireGuard file for this country: the GitHub secret PROTON_WG_<CODE>, which the workflow passes on
+    as an environment variable of the same name (empty when that secret does not exist)."""
+    return (os.environ.get(f"PROTON_WG_{country}") or "").strip() or None
 
 
 def prepare_config(text: str) -> tuple[str, list[str]]:
