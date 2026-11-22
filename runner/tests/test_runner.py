@@ -95,3 +95,15 @@ def test_check_writes_nothing(monkeypatch, capsys):
         monkeypatch.setenv(k, "x")
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     assert w.main(["--check"]) == 0 and "due=false" in capsys.readouterr().out
+
+
+def test_vpn_commands(monkeypatch):
+    ran = []
+    monkeypatch.setattr(w, "sh", lambda *cmd, stdin=None: ran.append((cmd, stdin)))
+    w.vpn_up("[Interface]\nPrivateKey = k\nAddress = 10.2.0.2/32\nDNS = 10.2.0.1\n[Peer]\nAllowedIPs = 0.0.0.0/0\n")
+    w.vpn_down()
+    cmds = [" ".join(c) for c, _ in ran]
+    assert cmds[:4] == ["sudo install -d -m 700 /etc/wireguard", "sudo tee /etc/wireguard/wg0.conf",
+                        "sudo chmod 600 /etc/wireguard/wg0.conf", "sudo wg-quick up wg0"]
+    assert "PrivateKey = k" in ran[1][1] and "DNS" not in ran[1][1]
+    assert "sudo resolvectl dns wg0 10.2.0.1" in cmds and cmds[-2:] == ["sudo wg-quick down wg0", "sudo rm -f /etc/wireguard/wg0.conf"]

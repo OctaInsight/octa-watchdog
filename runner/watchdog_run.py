@@ -43,7 +43,7 @@ PLACE = {
     "IN": ("en-IN", "Asia/Kolkata"), "BR": ("pt-BR", "America/Sao_Paulo"), "ZA": ("en-ZA", "Africa/Johannesburg"),
     "EG": ("ar-EG", "Africa/Cairo"),
 }
-WG_CONF = Path("/tmp/octa-wg/wg0.conf")
+WG_CONF = Path("/etc/wireguard/wg0.conf")      # WireGuard's own folder, owned by root (not /tmp, where root may not read)
 WAKE_TEXT = re.compile(r"get this app back up|wake.*app", re.I)
 
 
@@ -98,16 +98,17 @@ def prepare_config(text: str) -> tuple[str, list[str]]:
     return "\n".join(out) + "\n", dns
 
 
-def sh(*cmd: str) -> None:
-    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+def sh(*cmd: str, stdin: str | None = None) -> None:
+    subprocess.run(cmd, check=True, input=stdin.encode() if stdin is not None else None,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
 
 
 def vpn_up(text: str) -> None:
     conf, dns = prepare_config(text)
-    WG_CONF.parent.mkdir(parents=True, exist_ok=True)
-    WG_CONF.write_text(conf)
-    WG_CONF.chmod(0o600)
-    sh("sudo", "wg-quick", "up", str(WG_CONF))
+    sh("sudo", "install", "-d", "-m", "700", str(WG_CONF.parent))
+    sh("sudo", "tee", str(WG_CONF), stdin=conf)          # written by root, readable only by root
+    sh("sudo", "chmod", "600", str(WG_CONF))
+    sh("sudo", "wg-quick", "up", "wg0")
     if dns:
         sh("sudo", "resolvectl", "dns", "wg0", *dns)
         sh("sudo", "resolvectl", "domain", "wg0", "~.")
@@ -115,7 +116,8 @@ def vpn_up(text: str) -> None:
 
 def vpn_down() -> None:
     try:
-        sh("sudo", "wg-quick", "down", str(WG_CONF))
+        sh("sudo", "wg-quick", "down", "wg0")
+        sh("sudo", "rm", "-f", str(WG_CONF))
     except Exception:  # noqa: BLE001
         pass
 
