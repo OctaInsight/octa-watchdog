@@ -28,12 +28,14 @@ FAMILIES = {
     "science": "Octa scientific apps",
     "education": "Innovation, Education and Training apps",
     "games": "Octa games",
+    "performance": "Performance Apps",
 }
 FAMILY_HELP = {
     "cloudearthi": "Proposals and funded projects: partners, proposals, KPIs, project progress, finances, risks, hours and tasks",
     "science": "Open scientific tools, such as IgneoSuite for igneous geochemistry",
     "education": "Matchmaking and tools for innovation, education and training projects and events",
     "games": "Octa games (coming soon)",
+    "performance": "Keeping the Octa apps, websites and databases running well (Octa Insight only)",
 }
 RECHECK_SECONDS = 60
 _LOGO = Path(__file__).with_name("octa_logo.png")
@@ -289,8 +291,9 @@ def _cloud_apps():
 def _register_form(app: App):
     family = app.family
     if app.id == "portal":
-        family = st.radio("Which Octa apps are you mainly here for?", list(FAMILIES), format_func=FAMILIES.get,
-                          captions=[FAMILY_HELP[f] for f in FAMILIES], key="octa_reg_family")
+        choices = [f for f in FAMILIES if f != "performance"]   # internal Octa Insight apps: not a sign-up choice
+        family = st.radio("Which Octa apps are you mainly here for?", choices, format_func=FAMILIES.get,
+                          captions=[FAMILY_HELP[f] for f in choices], key="octa_reg_family")
     req = family in ("science", "cloudearthi", "education")
     with st.form("octa_register"):
         c1, c2 = st.columns(2)
