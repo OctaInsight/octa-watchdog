@@ -59,8 +59,23 @@ def _app_id(app: App):
     return None if app.id == "portal" else app.id
 
 
+SUITE_URL = "https://octa-suite.streamlit.app/"
+
+
 def portal_url() -> str:
-    return client.setting("portal_url", "")
+    return client.setting("portal_url", "") or SUITE_URL
+
+
+def _same_site(a: str, b: str) -> bool:
+    norm = lambda u: (u or "").strip().lower().split("?")[0].rstrip("/")  # noqa: E731
+    return bool(a) and norm(a) == norm(b)
+
+
+def suite_link(app: App) -> str:
+    """The Octa suite's address for this app's buttons. If the secrets point portal_url at this app itself (an easy
+    copy-paste slip), the buttons would just reopen this app, so the suite's own address is used instead."""
+    u = portal_url()
+    return SUITE_URL if app.id != "portal" and _same_site(u, app.url) else u
 
 
 def _base_url(app: App) -> str:
@@ -231,8 +246,8 @@ def auth_page(app: App):
         _register_form(app)
     else:
         _forgot_form(app)
-    if app.id != "portal" and portal_url():
-        st.caption(f"Other Octa apps: [Octa suite]({portal_url()})")
+    if app.id != "portal":
+        st.caption(f"Other Octa apps: [Octa suite]({suite_link(app)})")
 
 
 def _go(view: str):
@@ -375,7 +390,7 @@ def _register_form(app: App):
 def _welcome_email(app: App, u: dict):
     if not mail.enabled():
         return
-    link = portal_url() or _base_url(app)
+    link = suite_link(app)
     try:
         mail.send(u["email"], "Welcome to Octa Insight",
                   [f"Dear {html.escape(display_name(u))},",
@@ -522,8 +537,7 @@ def _no_access_page(app: App, user: dict):
             st.success("Your request was sent." if r.get("ok") else r.get("error"))
         except client.OctaError as e:
             st.error(str(e))
-    if portal_url():
-        st.link_button("Go to the Octa suite", with_session(portal_url()))
+    st.link_button("Go to the Octa suite", with_session(suite_link(app)))
     if st.button("Log out"):
         logout(app)
         st.rerun()
@@ -549,5 +563,5 @@ def sidebar(app: App):
         if c1.button("Log in", key="octa_login_btn", use_container_width=True):
             s["want_login"] = True
             st.rerun()
-    if portal_url() and app.id != "portal":
-        c2.link_button("Octa suite", with_session(portal_url()), use_container_width=True)
+    if app.id != "portal":
+        c2.link_button("Octa suite", with_session(suite_link(app)), use_container_width=True)
