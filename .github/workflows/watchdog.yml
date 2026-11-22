@@ -1,0 +1,81 @@
+# Octa Watchdog: every 15 minutes GitHub asks the Watchdog database whether a run is due (the interval and the VPN
+# country are set in the Watchdog app). When it is, the runner connects Proton VPN for that country, opens every app
+# and website, and saves the results in both databases. "Run workflow" on the Actions tab starts a run at once.
+#
+# GitHub secrets (Settings > Secrets and variables > Actions):
+#   WATCHDOG_KEY        made in the Watchdog app (Admin > Runner key)
+#   PROTON_WG_<CODE>    one Proton VPN WireGuard file per country, e.g. PROTON_WG_NL, PROTON_WG_US (the whole file)
+name: Watchdog
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Run now, even if the last run was recent"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write          # only for the keep-alive commit below
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+env:
+  OCTA_DB_URL: https://uxqeukvmnfvpgsxktgvo.supabase.co
+  OCTA_DB_KEY: sb_publishable_oFEaDte2Hy-gGsqpa9kWeQ_HuMm6dou          # publishable key: safe to show
+  DF_DB_URL: https://elqdtcmewughlpwejtsn.supabase.co
+  DF_DB_KEY: sb_publishable_5NLkYdjK8C4yH9nik5ftjQ_BiHKo7hy            # publishable key: safe to show
+  WATCHDOG_KEY: ${{ secrets.WATCHDOG_KEY }}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Is a run due?
+        id: check
+        run: |
+          pip install --quiet requests
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            echo "due=true" >> "$GITHUB_OUTPUT"
+          else
+            python runner/watchdog_run.py --check
+          fi
+
+      - name: Install browser and WireGuard
+        if: steps.check.outputs.due == 'true'
+        run: |
+          pip install --quiet playwright requests
+          python -m playwright install --with-deps chromium
+          sudo apt-get install -y -qq wireguard-tools > /dev/null
+
+      - name: Run
+        if: steps.check.outputs.due == 'true'
+        env:
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: python runner/watchdog_run.py ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }}
+
+      # GitHub switches off scheduled workflows in a repository with no commits for 60 days. An empty commit every
+      # ~45 days keeps the schedule alive.
+      - name: Keep the schedule alive
+        if: always()
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - last )) -gt $(( 45 * 86400 )) ]; then
+            git config user.name "octa-watchdog"
+            git config user.email "octa-watchdog@users.noreply.github.com"
+            git commit --allow-empty -m "Keep the Watchdog schedule active"
+            git push
+          fi

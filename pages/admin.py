@@ -1,207 +1,126 @@
-"""Octa Watchdog — Admin Panel."""
+"""Octa Watchdog: the apps and websites every run opens, the runner key, and how to set up GitHub and Proton VPN."""
+import hashlib
+import secrets
+
 import streamlit as st
-from supabase import create_client
 
-st.set_page_config(
-    page_title="Watchdog Admin",
-    page_icon="⚙️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+import wd
 
-st.markdown("""
-<style>
-html,body,[data-testid="stAppViewContainer"]{background:#0f1421!important;color:#e2e8f0!important}
-[data-testid="stSidebar"]{background:#1B2A4A!important;border-right:3px solid #00BCD4!important}
-[data-testid="stSidebar"] *{color:#e2e8f0!important}
-[data-testid="stSidebarNav"]{display:none!important}
-h1,h2,h3{color:#e2e8f0!important}
-input,textarea{background:#232f45!important;border-radius:8px!important;
-    color:#e2e8f0!important;border:1px solid rgba(255,255,255,0.09)!important}
-[data-testid="stButton"]>button{background:#232f45!important;
-    border:1px solid rgba(255,255,255,0.09)!important;color:#e2e8f0!important;border-radius:8px!important}
-[data-testid="stButton"]>button[kind="primary"]{
-    background:linear-gradient(135deg,#00BCD4,#0097A7)!important;
-    border:none!important;color:white!important;font-weight:600!important}
-[data-testid="stExpander"]{background:#1a2235!important;
-    border:1px solid rgba(255,255,255,0.09)!important;border-radius:10px!important}
-</style>
-""", unsafe_allow_html=True)
-
-
-@st.cache_resource
-def db():
-    return create_client(
-        st.secrets["supabase"]["url"],
-        st.secrets["supabase"]["key"]
-    )
-
-with st.sidebar:
-    st.markdown("""
-<div style="text-align:center;padding:1rem 0 0.5rem">
-<div style="font-size:2.5rem">⚙️</div>
-<div style="font-weight:700;font-size:1rem;color:#e2e8f0">Admin Panel</div>
-</div>""", unsafe_allow_html=True)
-    st.markdown("---")
-    if st.button("← Dashboard", use_container_width=True):
-        st.switch_page("app.py")
-
-st.markdown("""
-<div style="background:linear-gradient(135deg,#1B2A4A,#2d4a7a);
-padding:1.2rem 1.8rem;border-radius:12px;border-left:4px solid #00BCD4;margin-bottom:1.5rem">
-<h1 style="margin:0;font-size:1.6rem;color:white">⚙️ Watchdog Admin Panel</h1>
-<p style="margin:0.2rem 0 0;color:rgba(255,255,255,0.65);font-size:0.88rem">
-Add, edit and manage monitored Streamlit apps
-</p></div>""", unsafe_allow_html=True)
-
-# ── Add new app ───────────────────────────────────────────────────────────────
-st.markdown("<div style='font-size:0.72rem;font-weight:600;letter-spacing:0.08em;"
-            "text-transform:uppercase;color:#00BCD4;margin-bottom:0.5rem;"
-            "padding-bottom:0.3rem;border-bottom:1px solid rgba(255,255,255,0.09)'>"
-            "➕ Add New App</div>", unsafe_allow_html=True)
-
-with st.form("add_app_form", clear_on_submit=True):
-    c1, c2 = st.columns([2, 4])
-    with c1:
-        new_name = st.text_input("App Name *",
-                                  placeholder="e.g. Octa Proposals")
-    with c2:
-        new_url  = st.text_input("Streamlit URL *",
-                                  placeholder="https://your-app.streamlit.app")
-
-    if st.form_submit_button("➕ Add App", type="primary", use_container_width=True):
-        if not new_name.strip() or not new_url.strip():
-            st.error("❌ Both name and URL are required.")
-        else:
-            url = new_url.strip()
-            if not url.startswith("http"):
-                url = "https://" + url
-            try:
-                db().table("watchdog_apps").insert({
-                    "name": new_name.strip(),
-                    "url":  url,
-                    "is_active": True,
-                }).execute()
-                st.success(f"✅ '{new_name}' added!")
-                st.rerun()
-            except Exception as e:
-                if "unique" in str(e).lower():
-                    st.error("❌ This URL is already registered.")
-                else:
-                    st.error(f"❌ {e}")
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-# ── Bulk add ──────────────────────────────────────────────────────────────────
-with st.expander("📋 Bulk Add (paste multiple URLs)"):
-    st.markdown("<p style='color:#8899b0;font-size:0.84rem'>"
-                "Paste one URL per line. Name will be auto-set from the URL.</p>",
-                unsafe_allow_html=True)
-    bulk_text = st.text_area("URLs (one per line)", height=150,
-                              placeholder="https://app1.streamlit.app\nhttps://app2.streamlit.app")
-    if st.button("Add All", type="primary", key="bulk_add"):
-        lines = [l.strip() for l in bulk_text.splitlines() if l.strip()]
-        added = 0
-        for url in lines:
-            if not url.startswith("http"):
-                url = "https://" + url
-            name = url.replace("https://","").replace(".streamlit.app","").replace("-"," ").title()
-            try:
-                db().table("watchdog_apps").insert(
-                    {"name": name, "url": url, "is_active": True}
-                ).execute()
-                added += 1
-            except Exception:
-                pass
-        st.success(f"✅ Added {added} / {len(lines)} apps.")
-        st.rerun()
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-# ── Manage existing apps ──────────────────────────────────────────────────────
-st.markdown("<div style='font-size:0.72rem;font-weight:600;letter-spacing:0.08em;"
-            "text-transform:uppercase;color:#00BCD4;margin-bottom:0.5rem;"
-            "padding-bottom:0.3rem;border-bottom:1px solid rgba(255,255,255,0.09)'>"
-            "📋 Registered Apps</div>", unsafe_allow_html=True)
+wd.page_setup("Apps, websites and setup", "What every run opens, and what GitHub needs to run it.")
+wd.show_flash()
 
 try:
-    apps = db().table("watchdog_apps").select("*").order("name").execute().data or []
-except Exception:
-    apps = []
+    data = wd.api("overview", runs=1)
+except wd.WatchdogError as e:
+    st.error(str(e))
+    st.stop()
+s, targets = data["settings"], data["targets"]
+KINDS = {"streamlit": "Streamlit app", "website": "Website"}
 
-if not apps:
-    st.info("No apps registered yet. Add your first app above.")
-else:
-    # Summary
-    active = sum(1 for a in apps if a.get("is_active"))
-    st.markdown(
-        f"<div style='color:#8899b0;font-size:0.83rem;margin-bottom:0.8rem'>"
-        f"{len(apps)} apps registered · {active} active</div>",
-        unsafe_allow_html=True)
+# ------------------------------------------------------------------------------------------------ add
+st.markdown("### Add an app or website")
+with st.form("add", clear_on_submit=True):
+    a, b, c = st.columns([2, 4, 1.4])
+    name = a.text_input("Name", placeholder="e.g. Proposal Tracker")
+    url = b.text_input("Address", placeholder="https://your-app.streamlit.app")
+    kind = c.selectbox("Type", ["auto", "streamlit", "website"],
+                       format_func=lambda k: "Find out" if k == "auto" else KINDS[k])
+    if st.form_submit_button("Add", type="primary"):
+        u = url.strip()
+        if u and not u.startswith("http"):
+            u = "https://" + u
+        if not u:
+            st.error("Enter the address.")
+        else:
+            args = {"name": name.strip() or u.split("//")[-1].split("/")[0], "url": u}
+            if kind != "auto":
+                args["kind"] = kind
+            wd.run("save_target", f"Added {args['name']}.", **args) and st.rerun()
 
-    for app in apps:
-        aid    = app["id"]
-        name   = app.get("name","")
-        url    = app.get("url","")
-        active = app.get("is_active", True)
-        status = app.get("last_status","unknown")
-        ms     = app.get("last_response_ms",0) or 0
+a, b = st.columns(2)
+with a.expander("Add several at once (one address per line)"):
+    text = st.text_area("Addresses", height=120, placeholder="https://app1.streamlit.app\nhttps://www.example.org")
+    if st.button("Add all"):
+        added = 0
+        for line in (x.strip() for x in text.splitlines()):
+            if not line:
+                continue
+            u = line if line.startswith("http") else "https://" + line
+            nm = u.split("//")[-1].split("/")[0].replace(".streamlit.app", "").replace("-", " ").title()
+            try:
+                wd.api("save_target", name=nm, url=u)
+                added += 1
+            except wd.WatchdogError:
+                pass
+        st.session_state["wd_flash"] = f"Added {added} of {len([x for x in text.splitlines() if x.strip()])}."
+        st.rerun()
+if b.button("Add all live apps of the Octa suite", help="Every app marked live in the Octa suite's catalogue."):
+    r = wd.run("add_octa_apps")
+    if r is not None:
+        st.session_state["wd_flash"] = f"Added {r['added']} app{'s' * (r['added'] != 1)}."
+        st.rerun()
 
-        STATUS_ICONS  = {"up":"🟢","down":"🔴","unknown":"🟡"}
-        status_icon   = STATUS_ICONS.get(status,"🟡")
-        border_color  = "#6fcf97" if status=="up" else ("#fc8181" if status=="down" else "#f6cc52")
-        if not active: border_color = "#555577"
+# ------------------------------------------------------------------------------------------------ list
+st.markdown(f"### Opened by every run ({sum(t['active'] for t in targets)} of {len(targets)})")
+for t in targets:
+    cols = st.columns([3, 4, 1.6, 1.3, 0.9])
+    cols[0].markdown(f"**{t['name']}**  \n<span class='wd-muted'>{KINDS[t['kind']]}</span>", unsafe_allow_html=True)
+    cols[1].markdown(f"[{t['url']}]({t['url']})")
+    active = cols[2].toggle("Included", t["active"], key=f"on_{t['id']}")
+    if active != t["active"]:
+        wd.run("save_target", "Saved.", id=t["id"], url=t["url"], active=active) and st.rerun()
+    with cols[3].popover("Edit"):
+        with st.form(f"edit_{t['id']}"):
+            nm = st.text_input("Name", t["name"])
+            u = st.text_input("Address", t["url"])
+            k = st.selectbox("Type", list(KINDS), index=list(KINDS).index(t["kind"]), format_func=KINDS.get)
+            if st.form_submit_button("Save"):
+                wd.run("save_target", "Saved.", id=t["id"], name=nm, url=u.strip(), kind=k) and st.rerun()
+    if cols[4].button("🗑", key=f"del_{t['id']}", help="Remove from the list"):
+        wd.run("delete_target", f"Removed {t['name']}.", id=t["id"]) and st.rerun()
 
-        with st.expander(
-            f"{status_icon} {name}  ·  {'Active' if active else 'Paused'}",
-            expanded=False
-        ):
-            with st.form(f"edit_{aid}"):
-                ec1, ec2 = st.columns([2, 4])
-                with ec1:
-                    e_name = st.text_input("Name", value=name, key=f"en_{aid}")
-                with ec2:
-                    e_url  = st.text_input("URL",  value=url,  key=f"eu_{aid}")
+# ------------------------------------------------------------------------------------------------ runner key
+st.markdown("### Runner key")
+st.caption("GitHub uses this key to read the list above and save each run. Only its fingerprint is kept in the "
+           "database, so it is shown once. Making a new key stops the old one.")
+if s["key_set"]:
+    st.caption(f"A key is set (made {wd.when(s['runner_key_set_at'])}).")
+if st.session_state.get("wd_new_key"):
+    st.success("Copy this key now and save it in GitHub as the secret **WATCHDOG_KEY** (steps below). "
+               "It will not be shown again.")
+    st.code(st.session_state["wd_new_key"], language=None)
+    if st.button("I have saved it in GitHub"):
+        st.session_state.pop("wd_new_key")
+        st.rerun()
+elif st.button("Make a new runner key" if s["key_set"] else "Make the runner key", type="primary" if not s["key_set"] else "secondary"):
+    key = "wd_" + secrets.token_urlsafe(32)
+    if wd.run("set_runner_key", hash=hashlib.sha256(key.encode()).hexdigest()) is not None:
+        st.session_state["wd_new_key"] = key
+        st.rerun()
 
-                e_active = st.checkbox("Active (will be pinged)",
-                                       value=active, key=f"ea_{aid}")
+# ------------------------------------------------------------------------------------------------ setup
+st.markdown("### Setting up GitHub and Proton VPN (once)")
+st.markdown(f"""
+**1. The runner key.** Make it above, then in GitHub open the repository **OctaInsight/octa-watchdog** →
+**Settings** → **Secrets and variables** → **Actions** → **New repository secret**. Name: `WATCHDOG_KEY`, value: the key.
 
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.form_submit_button("💾 Save", type="primary",
-                                             use_container_width=True):
-                        eu = e_url.strip()
-                        if not eu.startswith("http"): eu = "https://" + eu
-                        db().table("watchdog_apps").update({
-                            "name":      e_name.strip(),
-                            "url":       eu,
-                            "is_active": e_active,
-                        }).eq("id", aid).execute()
-                        st.success("✅ Saved!"); st.rerun()
-                with col2:
-                    if st.form_submit_button("🗑 Delete", use_container_width=True):
-                        db().table("watchdog_apps").delete().eq("id", aid).execute()
-                        st.rerun()
+**2. A Proton VPN file for each country.** Sign in at **account.protonvpn.com** (the free plan works) →
+**Downloads** → **WireGuard configuration**. Choose platform *Linux*, give it a name, and pick a **free server** in the
+country you want; turn **off** "NetShield" and "VPN Accelerator" if offered. Click **Create** and download the
+`.conf` file. Open it with a text editor, copy **everything**, and save it in GitHub as a new secret named
+`PROTON_WG_` plus the country code, for example `PROTON_WG_NL`, `PROTON_WG_US`, `PROTON_WG_JP`. Repeat for every
+country you choose on the dashboard. A run whose country has no file still opens all pages, without the VPN, and
+says so in its notes.
 
-            # Status info
-            if app.get("last_checked"):
-                checks = app.get("check_count",0) or 0
-                fails  = app.get("fail_count",0)  or 0
-                uptime = round((1-fails/checks)*100,1) if checks>0 else 0
-                st.markdown(
-                    f"<div style='font-size:0.78rem;color:#8899b0;margin-top:0.3rem'>"
-                    f"Last check: {app['last_checked'][:19]}  ·  "
-                    f"Response: {ms}ms  ·  "
-                    f"Uptime: {uptime}%  ·  "
-                    f"Checks: {checks}  ·  Fails: {fails}"
-                    f"</div>", unsafe_allow_html=True)
+**3. Start the first run.** Open [the Watchdog workflow on GitHub]({wd.GITHUB_ACTIONS}) → **Run workflow**. After
+3–8 minutes the dashboard shows the run, the country the visits came from, and how each page answered. From then
+on GitHub checks every 15 minutes and runs as often as set on the dashboard.
 
-# ── Danger zone ───────────────────────────────────────────────────────────────
-st.markdown("<br>", unsafe_allow_html=True)
-with st.expander("⚠️ Danger Zone"):
-    st.markdown("<p style='color:#fc8181;font-size:0.84rem'>"
-                "These actions cannot be undone.</p>",
-                unsafe_allow_html=True)
-    if st.button("🗑 Delete ALL Apps", key="del_all"):
-        db().table("watchdog_apps").delete().neq("id", 0).execute()
-        st.success("All apps deleted."); st.rerun()
+Good to know:
+- Proton's free plan allows one connection at a time, so don't use the same Proton account on your own computer
+  during a run, or that run goes without the VPN.
+- Every run is recorded in both databases (table `watchdog_runs` in Octa_projects and in Data_and_Future) the moment
+  it starts, which also keeps the free Supabase projects from pausing.
+- GitHub switches off schedules in repositories without commits for 60 days; the workflow makes an empty commit
+  every ~45 days to prevent that.
+""")
