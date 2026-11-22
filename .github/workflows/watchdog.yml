@@ -1,6 +1,6 @@
-# Octa Watchdog: every 15 minutes GitHub asks the Watchdog database whether a run is due (the interval and the VPN
-# country are set in the Watchdog app). When it is, the runner connects Proton VPN for that country, opens every app
-# and website, and saves the results in both databases. "Run workflow" on the Actions tab starts a run at once.
+# Octa Watchdog: a run every 6 hours (00:17, 06:17, 12:17 and 18:17 UTC; GitHub may start it a little later). The
+# runner records the start in both databases, connects Proton VPN for the country chosen in the Watchdog app, opens
+# every app and website, and saves the results. "Run workflow" on the Actions tab starts a run at once.
 #
 # GitHub secrets (Settings > Secrets and variables > Actions):
 #   WATCHDOG_KEY        made in the Watchdog app (Admin > Runner key)
@@ -9,7 +9,7 @@ name: Watchdog
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "17 */6 * * *"
   workflow_dispatch:
     inputs:
       force:

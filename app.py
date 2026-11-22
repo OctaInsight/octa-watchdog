@@ -1,8 +1,9 @@
 """Octa Watchdog: keeps the Octa Streamlit apps, websites and databases awake.
 
-Every run (on GitHub Actions, see .github/workflows/watchdog.yml) connects Proton VPN for the country chosen here,
-opens every app and website in a real browser, and records the run in both databases. This page sets the country
-and the interval, and shows how the last runs went.
+Every 6 hours a run on GitHub Actions (.github/workflows/watchdog.yml) records its start in both databases
+(Octa_projects and Data_and_Future), connects Proton VPN for the country chosen here, and opens every app and website
+in a real browser. This page sets the country, shows how the last runs went, and touches both databases whenever it
+is opened.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -38,16 +39,34 @@ if last:
                   f"{last.get('woke') or 0} woken up" if last.get("woke") else None, delta_color="off")
     else:
         c3.metric("Pages answering", "running…")
-    nxt = started + timedelta(minutes=s["interval_minutes"])
-    c4.metric("Next run", wd.when(nxt.isoformat()) if nxt > datetime.now(timezone.utc) else "due now",
-              "GitHub may start it up to ~15 min later", delta_color="off")
-    if age > timedelta(minutes=s["interval_minutes"] * 2 + 30) and s["key_set"]:
+    c4.metric("Next run", wd.when(wd.next_scheduled().isoformat()), "every 6 hours; GitHub may start it a little later",
+              delta_color="off")
+    if age > timedelta(hours=13) and s["key_set"]:
         st.error("No run for a long time. Open the GitHub Actions page to see why (for example a missing secret).")
 else:
     c1.metric("Last run", "none yet")
 st.link_button("Open the runs on GitHub (and start one now with “Run workflow”)", wd.GITHUB_ACTIONS)
 if last and last.get("note"):
     st.caption(f"Last run notes: {last['note']}")
+
+# ------------------------------------------------------------------------------------------------ the two databases
+st.markdown("### Databases")
+if "wd_pinged" not in st.session_state:                      # opening the app also keeps both databases awake
+    st.session_state["wd_pinged"] = wd.ping_both("app")
+try:
+    df_runs = wd.second_rpc("watchdog_status", p_limit=1)["runs"]
+    df_last = wd.when(df_runs[0]["started_at"]) + f" (by the {'GitHub run' if df_runs[0]['source'] == 'github' else 'Watchdog app'})" if df_runs else "never"
+except wd.WatchdogError as e:
+    df_last = str(e)
+a, b = st.columns(2)
+a.markdown(f"<div class='wd-card'><b>Octa_projects</b> (the Watchdog's list and runs)<br>"
+           f"<span class='wd-muted'>Last run recorded: {wd.when(last['started_at']) if last else 'never'}. "
+           f"Reached now: {st.session_state['wd_pinged']['Octa_projects']}</span></div>", unsafe_allow_html=True)
+b.markdown(f"<div class='wd-card'><b>Data_and_Future</b><br><span class='wd-muted'>Last time stamp: {df_last}. "
+           f"Reached now: {st.session_state['wd_pinged']['Data_and_Future']}</span></div>", unsafe_allow_html=True)
+if st.button("Reach both databases now"):
+    st.session_state["wd_pinged"] = wd.ping_both("app")
+    st.rerun()
 
 # ------------------------------------------------------------------------------------------------ settings
 st.markdown("### Where the visits come from")
@@ -62,11 +81,7 @@ with st.form("settings"):
                           format_func=wd.country_label)
     rotate = b.multiselect("Countries to take turns between", [c for c in codes if c != "NONE"],
                            default=[c for c in s["rotate_countries"] if c in codes], format_func=wd.country_label)
-    a, b = st.columns(2)
-    intervals = [15, 30, 60, 120, 240, 480, 720, 1440]
-    interval = a.select_slider("How often", intervals, value=s["interval_minutes"] if s["interval_minutes"] in intervals else 30,
-                               format_func=lambda m: f"every {m} min" if m < 60 else f"every {m // 60} h")
-    dwell = b.slider("Seconds on each page", 5, 60, min(s["dwell_seconds"], 60),
+    dwell = st.slider("Seconds on each page", 5, 60, min(s["dwell_seconds"], 60),
                      help="How long the browser stays on each page, scrolling like a reader. Analytics tools such as "
                           "Google Analytics count a visit as engaged after about 10 seconds.")
     st.caption("Proton VPN's free plan has servers in the Netherlands, the United States, Japan, Poland, Romania, Norway, "
@@ -77,8 +92,7 @@ with st.form("settings"):
             st.error("Choose at least one country to take turns between.")
         else:
             wd.run("save_settings", "Saved. The next run uses these settings.", country=country,
-                   rotate=mode.startswith("Take"), rotate_countries=rotate, interval_minutes=interval,
-                   dwell_seconds=dwell) and st.rerun()
+                   rotate=mode.startswith("Take"), rotate_countries=rotate, dwell_seconds=dwell) and st.rerun()
 
 # ------------------------------------------------------------------------------------------------ apps and websites
 st.markdown("### Apps and websites")

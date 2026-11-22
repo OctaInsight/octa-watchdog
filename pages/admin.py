@@ -101,6 +101,20 @@ elif st.button("Make a new runner key" if s["key_set"] else "Make the runner key
 # ------------------------------------------------------------------------------------------------ setup
 st.markdown("### Setting up GitHub and Proton VPN (once)")
 st.markdown(f"""
+**0. The two databases in the Streamlit secrets** (Watchdog app → Settings → Secrets), so this app can reach both:
+
+```toml
+[octa_users]          # Octa_projects: sign-in, the Watchdog's list and runs
+url = "https://uxqeukvmnfvpgsxktgvo.supabase.co"
+key = "sb_publishable_oFEaDte2Hy-gGsqpa9kWeQ_HuMm6dou"
+
+[data_and_future]     # Data_and_Future: a time stamp on every run and when this app is opened
+url = "https://elqdtcmewughlpwejtsn.supabase.co"
+key = "sb_publishable_5NLkYdjK8C4yH9nik5ftjQ_BiHKo7hy"
+```
+
+Both keys are publishable keys, meant to be public. The GitHub runner has the same two addresses in its workflow file.
+
 **1. The runner key.** Make it above, then in GitHub open the repository **OctaInsight/octa-watchdog** →
 **Settings** → **Secrets and variables** → **Actions** → **New repository secret**. Name: `WATCHDOG_KEY`, value: the key.
 
@@ -114,7 +128,7 @@ says so in its notes.
 
 **3. Start the first run.** Open [the Watchdog workflow on GitHub]({wd.GITHUB_ACTIONS}) → **Run workflow**. After
 3–8 minutes the dashboard shows the run, the country the visits came from, and how each page answered. From then
-on GitHub checks every 15 minutes and runs as often as set on the dashboard.
+on GitHub runs it every 6 hours (00:17, 06:17, 12:17 and 18:17 UTC, sometimes a little later).
 
 Good to know:
 - Proton's free plan allows one connection at a time, so don't use the same Proton account on your own computer

@@ -1,9 +1,10 @@
 """Shared parts of the Watchdog app: sign-in, the database calls (watchdog_admin) and the look."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import requests
 import streamlit as st
 
 from octa_auth import App, client, require_login, sidebar, token
@@ -38,6 +39,58 @@ h1,h2,h3,h4{color:#e2e8f0!important}
 .wd-card{background:#1a2235;border:1px solid rgba(255,255,255,.09);border-radius:10px;padding:.9rem 1.1rem;margin-bottom:.6rem}
 .wd-muted{color:#8899b0;font-size:.85rem}
 </style>"""
+
+
+def next_scheduled(now: datetime | None = None) -> datetime:
+    """The next scheduled run: 00:17, 06:17, 12:17 or 18:17 UTC (the GitHub workflow's schedule)."""
+    now = now or datetime.now(timezone.utc)
+    t = now.replace(minute=17, second=0, microsecond=0, hour=(now.hour // 6) * 6)
+    while t <= now:
+        t += timedelta(hours=6)
+    return t
+
+
+# ---------------------------------------------------------------------------------------------------- the two databases
+# Octa_projects holds the Watchdog's list, settings and runs ([octa_users] in the secrets, also used for sign-in).
+# Data_and_Future ([data_and_future] in the secrets) gets a time stamp on every run and whenever this app is opened.
+def second_db() -> tuple[str, str] | None:
+    try:
+        sec = st.secrets.get("data_and_future") or {}
+        url, key = sec.get("url"), sec.get("key")
+    except Exception:
+        return None
+    return (url, key) if url and key else None
+
+
+def second_rpc(fn: str, **args) -> dict:
+    cfg = second_db()
+    if not cfg:
+        raise WatchdogError("The second database is not in the secrets yet ([data_and_future] url and key).")
+    url, key = cfg
+    try:
+        r = requests.post(f"{url.rstrip('/')}/rest/v1/rpc/{fn}", json=args, timeout=20,
+                          headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    except requests.RequestException as e:
+        raise WatchdogError(f"Data_and_Future could not be reached ({type(e).__name__}).") from None
+    if r.status_code >= 400:
+        raise WatchdogError(f"Data_and_Future answered with an error ({r.status_code}).")
+    return r.json()
+
+
+def ping_both(source: str = "app") -> dict:
+    """Touch both databases now. Returns {"Octa_projects": "ok" | problem, "Data_and_Future": ...}."""
+    out = {}
+    try:
+        api("overview", runs=1)
+        out["Octa_projects"] = "ok"
+    except WatchdogError as e:
+        out["Octa_projects"] = str(e)
+    try:
+        r = second_rpc("watchdog_ping", p_source=source, p_country=None)
+        out["Data_and_Future"] = "ok (reached less than a minute ago)" if r.get("skipped") else "ok"
+    except WatchdogError as e:
+        out["Data_and_Future"] = str(e)
+    return out
 
 
 def flag(code: str) -> str:

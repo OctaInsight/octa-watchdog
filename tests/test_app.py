@@ -24,6 +24,10 @@ def test_dashboard_shows_runs_and_changes_the_country():
     at, db = page()
     assert any("Japan" in m.value for m in at.metric), [m.value for m in at.metric]
     assert any("Runs have not started" in w.value for w in at.warning)
+    assert db.df_pings == ["app"], "opening the app touches the second database"
+    assert any("Data_and_Future" in m.value and "by the GitHub run" in m.value for m in at.markdown)
+    next(b for b in at.button if b.label == "Reach both databases now").click().run()
+    assert db.df_pings == ["app", "app"]
     at.selectbox[0].set_value("JP")
     at.radio[0].set_value("Take turns between countries")
     at.multiselect[0].set_value(["NL", "US", "SG"])
@@ -50,3 +54,10 @@ def test_admin_page_adds_sites_and_makes_a_key():
     assert key.startswith("wd_") and hashlib.sha256(key.encode()).hexdigest() == db.hash
     next(b for b in at.button if b.label == "I have saved it in GitHub").click().run()
     assert not at.code, "key shown only once"
+
+
+def test_next_scheduled_run_is_every_6_hours():
+    from datetime import datetime, timezone
+    import wd
+    assert wd.next_scheduled(datetime(2026, 11, 22, 11, 5, tzinfo=timezone.utc)).hour == 12
+    assert wd.next_scheduled(datetime(2026, 11, 22, 18, 20, tzinfo=timezone.utc)) == datetime(2026, 11, 23, 0, 17, tzinfo=timezone.utc)

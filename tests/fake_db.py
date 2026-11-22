@@ -8,12 +8,21 @@ class FakeDB:
         self.settings = dict(country="NL", rotate=False, rotate_countries=["NL", "US"], interval_minutes=30,
                              dwell_seconds=20, key_set=False, runner_key_set_at=None)
         self.hash = None
+        self.df_pings = []
         self.targets = [dict(id="t1", name="MOOC Studio", url="https://cloudearthi-mooc.streamlit.app/", kind="streamlit",
                              active=True, sort=1, last_status="woke", last_checked_at="2026-11-22T10:00:00+00:00",
                              last_ms=8300, last_country="JP", last_error=None)]
         self.runs = [dict(id="r1", started_at="2026-11-22T10:00:00+00:00", finished_at="2026-11-22T10:04:00+00:00",
                           planned_country="JP", vpn_country="JP", public_ip="1.2.3.4", up=3, woke=1, down=0,
                           note="second database: ok")]
+
+    def second(self, fn, **a):
+        if fn == "watchdog_ping":
+            self.df_pings.append(a.get("p_source"))
+            return {"ok": True}
+        if fn == "watchdog_status":
+            return {"ok": True, "runs": [{"started_at": "2026-11-22T06:17:30+00:00", "source": "github", "country": "NL"}]}
+        raise AssertionError(fn)
 
     def __call__(self, p):
         a = p["action"]

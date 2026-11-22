@@ -14,6 +14,7 @@ wd.require_login = lambda app, required=True: DB.user
 wd.sidebar = lambda app: None
 wd.token = lambda: "tok"
 wd.client.rpc = lambda fn, **a: DB(a["p"])
+wd.second_rpc = lambda fn, **a: DB.second(fn, **a)
 st_page_link = __import__("streamlit").page_link
 __import__("streamlit").page_link = lambda *a, **k: None
 runpy.run_path(os.path.join(ROOT, os.environ.get("WD_PAGE", "app.py")), run_name="__main__")
